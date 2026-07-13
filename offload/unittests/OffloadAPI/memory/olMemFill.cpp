@@ -8,7 +8,9 @@
 
 #include "../common/Fixtures.hpp"
 #include <OffloadAPI.h>
+#include <cstring>
 #include <gtest/gtest.h>
+#include <vector>
 
 struct olMemFillTest : OffloadQueueTest {
   void SetUp() override { RETURN_ON_FATAL_FAILURE(OffloadQueueTest::SetUp()); }
@@ -40,6 +42,62 @@ struct olMemFillTest : OffloadQueueTest {
       PatternTy *AllocPtr = reinterpret_cast<PatternTy *>(Alloc);
       ASSERT_EQ(AllocPtr[i], Pattern);
     }
+
+    olMemFree(Alloc);
+  }
+
+  // Fill host-accessible memory (MANAGED/SHARED or HOST USM) with a raw byte
+  // pattern and verify the bytes directly on the host. Used to drive the L0
+  // plugin's non-fast-path fill fallbacks that stay on the CPU / reduce to a
+  // single-byte fill.
+  void fill_host_bytes(ol_alloc_type_t AllocType, const uint8_t *Pattern,
+                       size_t PatternSize, size_t Size, bool Block = false) {
+    ASSERT_EQ(Size % PatternSize, 0u);
+    ManuallyTriggeredTask Manual;
+    if (Block)
+      ASSERT_SUCCESS(Manual.enqueue(Queue));
+
+    void *Alloc;
+    ASSERT_SUCCESS(olMemAlloc(Device, AllocType, Size, &Alloc));
+
+    ASSERT_SUCCESS(olMemFill(Queue, Alloc, PatternSize, Pattern, Size));
+
+    if (Block)
+      ASSERT_SUCCESS(Manual.trigger());
+    olSyncQueue(Queue);
+
+    const uint8_t *AllocBytes = reinterpret_cast<const uint8_t *>(Alloc);
+    for (size_t Off = 0; Off < Size; Off += PatternSize)
+      ASSERT_EQ(memcmp(AllocBytes + Off, Pattern, PatternSize), 0);
+
+    olMemFree(Alloc);
+  }
+
+  // Fill DEVICE USM (not host-dereferenceable) with a raw byte pattern, copy
+  // it back to host via olMemcpy, and verify. Drives the L0 plugin's on-device
+  // replicate fallback for mixed-byte patterns.
+  void fill_device_bytes(const uint8_t *Pattern, size_t PatternSize,
+                         size_t Size, bool Block = false) {
+    ASSERT_EQ(Size % PatternSize, 0u);
+    ManuallyTriggeredTask Manual;
+    if (Block)
+      ASSERT_SUCCESS(Manual.enqueue(Queue));
+
+    void *Alloc;
+    ASSERT_SUCCESS(olMemAlloc(Device, OL_ALLOC_TYPE_DEVICE, Size, &Alloc));
+
+    ASSERT_SUCCESS(olMemFill(Queue, Alloc, PatternSize, Pattern, Size));
+
+    std::vector<uint8_t> Output(Size, 0);
+    ASSERT_SUCCESS(
+        olMemcpy(Queue, Output.data(), Host, Alloc, Device, Size));
+
+    if (Block)
+      ASSERT_SUCCESS(Manual.trigger());
+    ASSERT_SUCCESS(olSyncQueue(Queue));
+
+    for (size_t Off = 0; Off < Size; Off += PatternSize)
+      ASSERT_EQ(memcmp(Output.data() + Off, Pattern, PatternSize), 0);
 
     olMemFree(Alloc);
   }
@@ -193,4 +251,79 @@ TEST_P(olMemFillTest, InvalidPatternSize) {
 
   olSyncQueue(Queue);
   olMemFree(Alloc);
+}
+
+// The tests below drive fill patterns that cannot use a plain power-of-two
+// native device fill, exercising the plugin fallbacks (e.g. the Level Zero
+// plugin's memoryFillFallback). They select behavior purely through pattern
+// shape (size / byte content / allocation type) and are valid on any backend.
+
+// Non-power-of-two size with all identical bytes: falls off the native
+// power-of-two fast path, but reduces to an equivalent single-byte fill.
+TEST_P(olMemFillTest, SuccessRepeatedByteNotPow2) {
+  const uint8_t Pattern[3] = {0xAB, 0xAB, 0xAB};
+  fill_host_bytes(OL_ALLOC_TYPE_MANAGED, Pattern, sizeof(Pattern), 3 * 341);
+}
+
+TEST_P(olMemFillTest, SuccessRepeatedByteNotPow2Enqueue) {
+  const uint8_t Pattern[3] = {0xAB, 0xAB, 0xAB};
+  fill_host_bytes(OL_ALLOC_TYPE_MANAGED, Pattern, sizeof(Pattern), 3 * 341,
+                  /*Block=*/true);
+}
+
+// Mixed-byte, non-power-of-two pattern on host-accessible memory: the fill can
+// be completed on the CPU without a device fill.
+TEST_P(olMemFillTest, SuccessMixedBytesManaged) {
+  const uint8_t Pattern[3] = {0x01, 0x02, 0x03};
+  fill_host_bytes(OL_ALLOC_TYPE_MANAGED, Pattern, sizeof(Pattern), 3 * 341);
+}
+
+TEST_P(olMemFillTest, SuccessMixedBytesManagedEnqueue) {
+  const uint8_t Pattern[3] = {0x01, 0x02, 0x03};
+  fill_host_bytes(OL_ALLOC_TYPE_MANAGED, Pattern, sizeof(Pattern), 3 * 341,
+                  /*Block=*/true);
+}
+
+// Same pattern on explicit HOST USM to cover the HOST (not just SHARED) branch.
+TEST_P(olMemFillTest, SuccessMixedBytesHost) {
+  const uint8_t Pattern[3] = {0x01, 0x02, 0x03};
+  fill_host_bytes(OL_ALLOC_TYPE_HOST, Pattern, sizeof(Pattern), 3 * 341);
+}
+
+// Mixed-byte, non-power-of-two pattern on DEVICE memory: the plugin must build
+// the fill on the device (e.g. seed one copy then replicate it). Verified by
+// copying the result back to the host.
+TEST_P(olMemFillTest, SuccessMixedBytesDeviceNotPow2) {
+  const uint8_t Pattern[3] = {0x01, 0x02, 0x03};
+  fill_device_bytes(Pattern, sizeof(Pattern), 3 * 341);
+}
+
+TEST_P(olMemFillTest, SuccessMixedBytesDeviceNotPow2Enqueue) {
+  // The device-side fallback fill synchronizes the queue internally, which
+  // deadlocks against a manually blocked host function on the Level Zero
+  // backend (mirrors SuccessLargeByteAlignedEnqueue).
+  SKIP_KNOWN_FAILURE(LevelZero{"unsupported feature"});
+  const uint8_t Pattern[3] = {0x01, 0x02, 0x03};
+  fill_device_bytes(Pattern, sizeof(Pattern), 3 * 341, /*Block=*/true);
+}
+
+// Mixed-byte, oversized power-of-two pattern on DEVICE memory: larger than the
+// device's maximum native fill pattern size on typical Level Zero hardware, so
+// it also takes the on-device replicate path there while remaining correct
+// everywhere.
+TEST_P(olMemFillTest, SuccessMixedBytesDeviceOversized) {
+  uint8_t Pattern[32];
+  for (size_t I = 0; I < sizeof(Pattern); I++)
+    Pattern[I] = static_cast<uint8_t>(I + 1);
+  fill_device_bytes(Pattern, sizeof(Pattern), 32 * 32);
+}
+
+TEST_P(olMemFillTest, SuccessMixedBytesDeviceOversizedEnqueue) {
+  // See SuccessMixedBytesDeviceNotPow2Enqueue: the device-side fallback fill
+  // synchronizes internally and deadlocks against the blocked host function.
+  SKIP_KNOWN_FAILURE(LevelZero{"unsupported feature"});
+  uint8_t Pattern[32];
+  for (size_t I = 0; I < sizeof(Pattern); I++)
+    Pattern[I] = static_cast<uint8_t>(I + 1);
+  fill_device_bytes(Pattern, sizeof(Pattern), 32 * 32, /*Block=*/true);
 }
