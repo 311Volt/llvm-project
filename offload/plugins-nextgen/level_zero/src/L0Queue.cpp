@@ -45,6 +45,29 @@ Error L0QueueTy::deinit() {
   return Plugin::success();
 }
 
+void L0QueueTy::reset() {
+  std::lock_guard<std::mutex> Lock(PendingFillSeedsMutex);
+  resetImpl();
+  PendingFillSeeds.clear();
+}
+
+Error L0QueueTy::synchronize() {
+  std::vector<std::vector<unsigned char>> FillSeedsToRelease;
+  {
+    std::lock_guard<std::mutex> Lock(PendingFillSeedsMutex);
+    FillSeedsToRelease.swap(PendingFillSeeds);
+  }
+
+  if (auto Err = synchronizeImpl()) {
+    std::lock_guard<std::mutex> Lock(PendingFillSeedsMutex);
+    for (auto &Seed : FillSeedsToRelease)
+      PendingFillSeeds.emplace_back(std::move(Seed));
+    return Err;
+  }
+
+  return Plugin::success();
+}
+
 Error L0QueueTy::dispatchLaunchKernel(ze_kernel_handle_t Kernel,
                                       L0LaunchEnvTy &KEnv,
                                       ze_event_handle_t SignalEvent,
@@ -111,8 +134,8 @@ Error L0QueueTy::memoryFillHostImpl(void *Ptr, const void *Pattern,
 /// Replicate the pattern in \p Buf (of \p Size bytes) on the host until it is
 /// at least \p MinExtendedSize bytes long. The result is
 /// never larger than max(Size, 2 * MinExtendedSize).
-static std::vector<unsigned char> extendPattern(unsigned char *Buf, size_t Size,
-                                                size_t MinExtendedSize) {
+static std::vector<unsigned char>
+extendPattern(const unsigned char *Buf, size_t Size, size_t MinExtendedSize) {
   assert(Size > 0 && MinExtendedSize > 0 &&
          "Invalid pattern size or extension size");
   const size_t NumPatterns =
@@ -134,14 +157,20 @@ Error L0QueueTy::memoryFillReplicateImpl(void *Ptr, const void *Pattern,
   // Grow the pattern on the host first - avoids several inefficient small
   // device copies.
   constexpr size_t MinExtendedSeedSize = 1024;
-  const auto ExtendedPattern =
-      extendPattern(static_cast<unsigned char *>(const_cast<void *>(Pattern)),
-                    PatternSize, std::min(Size, MinExtendedSeedSize));
+  size_t BytesFilled;
+  {
+    // Keep the seed alive until synchronization. Holding the lock through
+    // submission ensures synchronize() cannot detach it before it is queued.
+    std::lock_guard<std::mutex> Lock(PendingFillSeedsMutex);
+    const auto &ExtendedPattern = PendingFillSeeds.emplace_back(
+        extendPattern(static_cast<const unsigned char *>(Pattern), PatternSize,
+                      std::min(Size, MinExtendedSeedSize)));
 
-  // Seed the (extended) pattern once using dataSubmit.
-  size_t BytesFilled = std::min(ExtendedPattern.size(), Size);
-  if (auto Err = dataSubmit(Dst, ExtendedPattern.data(), BytesFilled))
-    return Err;
+    // Seed the (extended) pattern once using dataSubmit.
+    BytesFilled = std::min(ExtendedPattern.size(), Size);
+    if (auto Err = dataSubmit(Dst, ExtendedPattern.data(), BytesFilled))
+      return Err;
+  }
 
   // Clone the seed, doubling each time, until it fills the entire destination.
   while (BytesFilled < Size) {

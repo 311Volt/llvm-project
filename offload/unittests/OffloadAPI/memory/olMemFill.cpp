@@ -271,6 +271,28 @@ TEST_P(olMemFillTest, SuccessNonPow2PatternDevice) {
   olMemFree(Alloc);
 }
 
+TEST_P(olMemFillTest, SuccessNonPow2PatternDeviceEnqueue) {
+  constexpr size_t Size = FallbackPattern.size() * 2;
+  ManuallyTriggeredTask Manual;
+  ASSERT_SUCCESS(Manual.enqueue(Queue));
+
+  void *Alloc;
+  ASSERT_SUCCESS(olMemAlloc(Device, OL_ALLOC_TYPE_DEVICE, Size, &Alloc));
+
+  ASSERT_SUCCESS(olMemFill(Queue, Alloc, FallbackPattern.size(),
+                           FallbackPattern.data(), Size));
+
+  std::vector<unsigned char> HostBuf(Size);
+  ASSERT_SUCCESS(olMemcpy(Queue, HostBuf.data(), Host, Alloc, Device, Size));
+  ASSERT_SUCCESS(Manual.trigger());
+  olSyncQueue(Queue);
+
+  for (size_t I = 0; I < Size; I++)
+    ASSERT_EQ(HostBuf[I], FallbackPattern[I % FallbackPattern.size()]);
+
+  olMemFree(Alloc);
+}
+
 TEST_P(olMemFillTest, SuccessNonPow2PatternDeviceSmall) {
   constexpr size_t Size = FallbackPattern.size() * 2;
   void *Alloc;

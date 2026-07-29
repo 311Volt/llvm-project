@@ -18,6 +18,7 @@
 
 #include <mutex>
 #include <tuple>
+#include <vector>
 
 #include "L0CmdListManager.h"
 #include "L0Options.h"
@@ -43,11 +44,11 @@ public:
   virtual ~L0QueueTy() {}
 
   /// Clear data.
-  void reset() { resetImpl(); }
+  void reset();
 
   Error init();
   Error deinit();
-  Error synchronize() { return synchronizeImpl(); }
+  Error synchronize();
   Expected<bool> hasPendingWork() { return hasPendingWorkImpl(); }
 
   Error memoryCopy(void *Dst, const void *Src, size_t Size) {
@@ -154,6 +155,10 @@ public:
   }
 
 private:
+  /// Host-side seeds that may still be read by asynchronous memory copies.
+  std::mutex PendingFillSeedsMutex;
+  std::vector<std::vector<unsigned char>> PendingFillSeeds;
+
   /// Fallback fill for host-accessible target memory: replicate the pattern
   /// directly on the host with std::copy_n.
   Error memoryFillHostImpl(void *Ptr, const void *Pattern, size_t PatternSize,
