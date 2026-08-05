@@ -16,6 +16,8 @@
 
 #include "DLWrap.h"
 
+#include <atomic>
+
 #define API_HELPER_STRINGIFY_INNER(x) #x
 #define API_HELPER_STRINGIFY(x) API_HELPER_STRINGIFY_INNER(x)
 
@@ -52,6 +54,8 @@ template <auto Fn> bool canCall() {
                 "api_helper::canCall() should only be called on symbols "
                 "decorated with API_HELPER_OPTIONAL!");
 }
+
+template <auto Fn> inline std::atomic<bool> hasReturnedUnsupported{false};
 
 } // namespace api_helper
 

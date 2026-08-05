@@ -12,7 +12,11 @@
 #include <thread>
 
 struct olLaunchHostFunctionTest : OffloadQueueTest {
-  void SetUp() override { RETURN_ON_FATAL_FAILURE(OffloadQueueTest::SetUp()); }
+  void SetUp() override {
+    RETURN_ON_FATAL_FAILURE(OffloadQueueTest::SetUp());
+    ASSERT_SUCCESS_OR_UNSUPPORTED(
+        olLaunchHostFunction(Queue, [](void *) {}, nullptr));
+  }
 };
 OFFLOAD_TESTS_INSTANTIATE_DEVICE_FIXTURE(olLaunchHostFunctionTest);
 
