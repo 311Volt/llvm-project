@@ -1744,7 +1744,9 @@ struct CUDAPluginContextTy final : public PluginContextTy {
 
     // Ordinal is the CUDA driver ordinal (matches CUdevice); compare against
     // that rather than the offload-side device index, which can differ under
-    // CUDA_VISIBLE_DEVICES or plugin-side device filtering.
+    // CUDA_VISIBLE_DEVICES or plugin-side device filtering. For host memory
+    // it names the device whose context performed the allocation, which only
+    // serves as a membership check: host memory has no owning device.
     GenericDeviceTy *OwnerDevice = nullptr;
     for (auto *D : Devices) {
       auto &CD = static_cast<CUDADeviceTy &>(*D);
@@ -1757,8 +1759,9 @@ struct CUDAPluginContextTy final : public PluginContextTy {
       return Plugin::error(error::ErrorCode::NOT_FOUND,
                            "allocation owner is not a device of this context");
 
-    return PluginAllocInfoTy{OwnerDevice, Kind,
-                             reinterpret_cast<void *>(RangeStart), RangeSize};
+    return PluginAllocInfoTy{Kind == TARGET_ALLOC_HOST ? nullptr : OwnerDevice,
+                             Kind, reinterpret_cast<void *>(RangeStart),
+                             RangeSize};
   }
 };
 

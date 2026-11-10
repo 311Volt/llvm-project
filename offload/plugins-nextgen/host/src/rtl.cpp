@@ -495,6 +495,17 @@ struct GenELF64PluginContextTy final : public PluginContextTy {
     return Ptr;
   }
 
+  Expected<void *> allocateHost(int64_t Size, size_t Alignment,
+                                GenericProfilerTy *ProfilerPtr) override {
+    auto PtrOrErr = PluginContextTy::allocateHost(Size, Alignment, ProfilerPtr);
+    if (!PtrOrErr)
+      return PtrOrErr.takeError();
+    void *Ptr = *PtrOrErr;
+    std::lock_guard<std::mutex> Lock(AllocsMutex);
+    Allocs[Ptr] = Entry{nullptr, TARGET_ALLOC_HOST, static_cast<size_t>(Size)};
+    return Ptr;
+  }
+
   Error deallocate(GenericDeviceTy &Device, void *Ptr, TargetAllocTy Kind,
                    GenericProfilerTy *ProfilerPtr) override {
     {
@@ -502,6 +513,14 @@ struct GenELF64PluginContextTy final : public PluginContextTy {
       Allocs.erase(Ptr);
     }
     return PluginContextTy::deallocate(Device, Ptr, Kind, ProfilerPtr);
+  }
+
+  Error deallocateHost(void *Ptr, GenericProfilerTy *ProfilerPtr) override {
+    {
+      std::lock_guard<std::mutex> Lock(AllocsMutex);
+      Allocs.erase(Ptr);
+    }
+    return PluginContextTy::deallocateHost(Ptr, ProfilerPtr);
   }
 
   Expected<PluginAllocInfoTy> getAllocInfo(const void *Ptr) override {
@@ -522,6 +541,7 @@ struct GenELF64PluginContextTy final : public PluginContextTy {
 
 private:
   struct Entry {
+    /// Owning device; null for host allocations.
     GenericDeviceTy *Device;
     TargetAllocTy Kind;
     size_t Size;

@@ -53,8 +53,12 @@ public:
                                   void *HostPtr, TargetAllocTy Kind,
                                   size_t Alignment,
                                   GenericProfilerTy *ProfilerPtr) override;
+  llvm::Expected<void *> allocateHost(int64_t Size, size_t Alignment,
+                                      GenericProfilerTy *ProfilerPtr) override;
   llvm::Error deallocate(GenericDeviceTy &Device, void *Ptr, TargetAllocTy Kind,
                          GenericProfilerTy *ProfilerPtr) override;
+  llvm::Error deallocateHost(void *Ptr,
+                             GenericProfilerTy *ProfilerPtr) override;
   Expected<PluginAllocInfoTy> getAllocInfo(const void *Ptr) override;
 
   Expected<void *> getNativeHandle() override { return ZeContext; }

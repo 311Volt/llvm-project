@@ -161,14 +161,13 @@ void *aligned_alloc(std::size_t alignment, std::size_t numBytes,
   if (alignment == 0) {
     Result =
         kind == usm::alloc::host
-            ? detail::callNoCheck(olMemAllocHost, OLContext, OLDevice, numBytes,
-                                  &Ptr)
+            ? detail::callNoCheck(olMemAllocHost, OLContext, numBytes, &Ptr)
             : detail::callNoCheck(olMemAlloc, OLContext, OLDevice,
                                   detail::getOlAllocType(kind), numBytes, &Ptr);
   } else {
     Result = kind == usm::alloc::host
                  ? detail::callNoCheck(olMemAllocAlignedHost, OLContext,
-                                       OLDevice, numBytes, alignment, &Ptr)
+                                       numBytes, alignment, &Ptr)
                  : detail::callNoCheck(olMemAllocAligned, OLContext, OLDevice,
                                        detail::getOlAllocType(kind), numBytes,
                                        alignment, &Ptr);

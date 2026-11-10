@@ -22,7 +22,7 @@ TEST_P(olMemFreeAllocTypesTest, Success) {
   void *Alloc = nullptr;
   ol_alloc_type_t AllocType = getTestParam();
   if (AllocType == OL_ALLOC_TYPE_HOST) {
-    ASSERT_SUCCESS(olMemAllocHost(Context, Device, 1024, &Alloc));
+    ASSERT_SUCCESS(olMemAllocHost(Context, 1024, &Alloc));
   } else {
     ASSERT_SUCCESS(olMemAlloc(Context, Device, AllocType, 1024, &Alloc));
   }

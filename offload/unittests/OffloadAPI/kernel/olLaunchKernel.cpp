@@ -86,7 +86,7 @@ TEST_P(olLaunchKernelFooTest, SuccessThreaded) {
     size_t Size = LaunchArgs.GroupSize.x * sizeof(uint32_t);
     ASSERT_SUCCESS(
         olMemAlloc(Context, Device, OL_ALLOC_TYPE_DEVICE, Size, &DevAlloc));
-    ASSERT_SUCCESS(olMemAllocHost(Context, Device, Size, &HstAlloc));
+    ASSERT_SUCCESS(olMemAllocHost(Context, Size, &HstAlloc));
 
     void *ArgPtrs[] = {&DevAlloc};
     size_t ArgSizes[] = {sizeof(DevAlloc)};
@@ -196,8 +196,8 @@ TEST_P(olLaunchKernelByValPtrTest, Success) {
 
 TEST_P(olLaunchKernelByValPtrTest, SuccessHost) {
   void *Mem;
-  ASSERT_SUCCESS(olMemAllocHost(
-      Context, Device, LaunchArgs.GroupSize.x * sizeof(uint32_t), &Mem));
+  ASSERT_SUCCESS(
+      olMemAllocHost(Context, LaunchArgs.GroupSize.x * sizeof(uint32_t), &Mem));
 
   Wrapper W{(uint32_t *)Mem};
 

@@ -220,6 +220,10 @@ struct ol_context_impl_t {
                                Alignment);
   }
 
+  llvm::Expected<void *> allocateHost(int64_t Size, size_t Alignment) {
+    return PluginCtx->allocateHost(Size, Alignment);
+  }
+
   llvm::Error deallocate(void *Ptr) { return PluginCtx->deallocate(Ptr); }
 
   llvm::Expected<PluginAllocInfoTy> getAllocInfo(const void *Ptr) {
@@ -864,11 +868,10 @@ Error olMemAlloc_impl(ol_context_handle_t Context, ol_device_handle_t Device,
   return Error::success();
 }
 
-Error olMemAllocHost_impl(ol_context_handle_t Context,
-                          ol_device_handle_t Device, size_t Size,
+Error olMemAllocHost_impl(ol_context_handle_t Context, size_t Size,
                           void **AllocationOut) {
-  auto AllocOrErr = Context->allocate(Device, static_cast<int64_t>(Size),
-                                      TARGET_ALLOC_HOST, /*Alignment=*/0);
+  auto AllocOrErr =
+      Context->allocateHost(static_cast<int64_t>(Size), /*Alignment=*/0);
   if (!AllocOrErr)
     return AllocOrErr.takeError();
   *AllocationOut = *AllocOrErr;
@@ -891,11 +894,10 @@ Error olMemAllocAligned_impl(ol_context_handle_t Context,
   return Error::success();
 }
 
-Error olMemAllocAlignedHost_impl(ol_context_handle_t Context,
-                                 ol_device_handle_t Device, size_t Size,
+Error olMemAllocAlignedHost_impl(ol_context_handle_t Context, size_t Size,
                                  size_t Alignment, void **AllocationOut) {
-  auto AllocOrErr = Context->allocate(Device, static_cast<int64_t>(Size),
-                                      TARGET_ALLOC_HOST, Alignment);
+  auto AllocOrErr =
+      Context->allocateHost(static_cast<int64_t>(Size), Alignment);
   if (!AllocOrErr)
     return AllocOrErr.takeError();
   *AllocationOut = *AllocOrErr;

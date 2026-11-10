@@ -18,7 +18,7 @@ struct olGetMemInfoAllocTypeTest : OffloadDeviceTestWithParam<ol_alloc_type_t> {
         OffloadDeviceTestWithParam<ol_alloc_type_t>::SetUp());
     AllocType = getTestParam();
     if (AllocType == OL_ALLOC_TYPE_HOST)
-      ASSERT_SUCCESS(olMemAllocHost(Context, Device, SIZE, &Ptr));
+      ASSERT_SUCCESS(olMemAllocHost(Context, SIZE, &Ptr));
     else
       ASSERT_SUCCESS(olMemAlloc(Context, Device, AllocType, SIZE, &Ptr));
   }

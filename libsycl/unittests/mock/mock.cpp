@@ -145,11 +145,9 @@ ol_result_t olMemAlloc(ol_context_handle_t Context, ol_device_handle_t Device,
                                               AllocationOut);
 }
 
-ol_result_t olMemAllocHost(ol_context_handle_t Context,
-                           ol_device_handle_t Device, size_t Size,
+ol_result_t olMemAllocHost(ol_context_handle_t Context, size_t Size,
                            void **AllocationOut) {
-  return mock::getMockLiboffload().olMemAllocHost(Context, Device, Size,
-                                                  AllocationOut);
+  return mock::getMockLiboffload().olMemAllocHost(Context, Size, AllocationOut);
 }
 
 ol_result_t olMemFree(ol_context_handle_t Context, void *Address) {
@@ -173,9 +171,8 @@ ol_result_t olMemAllocAligned(ol_context_handle_t Context,
                                                      Size, Alignment, OutPtr);
 }
 
-ol_result_t olMemAllocAlignedHost(ol_context_handle_t Context,
-                                  ol_device_handle_t Device, size_t Size,
+ol_result_t olMemAllocAlignedHost(ol_context_handle_t Context, size_t Size,
                                   size_t Alignment, void **OutPtr) {
-  return mock::getMockLiboffload().olMemAllocAlignedHost(Context, Device, Size,
+  return mock::getMockLiboffload().olMemAllocAlignedHost(Context, Size,
                                                          Alignment, OutPtr);
 }

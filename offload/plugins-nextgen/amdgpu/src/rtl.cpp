@@ -2399,7 +2399,8 @@ private:
 struct AMDGPUDeviceTy : public GenericDeviceTy, AMDGenericDeviceTy {
   // Create an AMDGPU device with a device id and default AMDGPU grid values.
   AMDGPUDeviceTy(GenericPluginTy &Plugin, int32_t DeviceId, int32_t NumDevices,
-                 AMDHostDeviceTy &HostDevice, hsa_agent_t Agent)
+                 AMDHostDeviceTy &HostDevice, hsa_agent_t Agent,
+                 PinnedAllocationMapTy &PluginHostAllocs)
       : GenericDeviceTy(Plugin, DeviceId, NumDevices, {}), AMDGenericDeviceTy(),
         OMPX_NumQueues("LIBOMPTARGET_AMDGPU_NUM_HSA_QUEUES", 4),
         OMPX_QueueSize("LIBOMPTARGET_AMDGPU_HSA_QUEUE_SIZE", 512),
@@ -2413,7 +2414,7 @@ struct AMDGPUDeviceTy : public GenericDeviceTy, AMDGenericDeviceTy {
             "LIBOMPTARGET_AMDGPU_USE_MULTIPLE_SDMA_ENGINES", false),
         OMPX_ApuMaps("OMPX_APU_MAPS", false), AMDGPUStreamManager(*this, Agent),
         AMDGPUEventManager(*this), AMDGPUSignalManager(*this), Agent(Agent),
-        HostDevice(HostDevice) {}
+        HostDevice(HostDevice), PluginHostAllocs(PluginHostAllocs) {}
 
   ~AMDGPUDeviceTy() {}
 
@@ -2864,9 +2865,13 @@ struct AMDGPUDeviceTy : public GenericDeviceTy, AMDGenericDeviceTy {
 
     // See allocate() for the registration of host / shared memory as pinned
     // memory.
-    if (Kind == TARGET_ALLOC_HOST || Kind == TARGET_ALLOC_SHARED)
-      if (auto Err = PinnedAllocs.unregisterHostBuffer(TgtPtr))
+    if (Kind == TARGET_ALLOC_HOST || Kind == TARGET_ALLOC_SHARED) {
+      PinnedAllocationMapTy &Allocs =
+          PluginHostAllocs.isHostPinnedBuffer(TgtPtr) ? PluginHostAllocs
+                                                      : PinnedAllocs;
+      if (auto Err = Allocs.unregisterHostBuffer(TgtPtr))
         return Err;
+    }
 
     if (auto Err = MemoryPool->deallocate(TgtPtr))
       return Err;
@@ -2973,6 +2978,16 @@ struct AMDGPUDeviceTy : public GenericDeviceTy, AMDGenericDeviceTy {
     return true;
   }
 
+  /// Return the device accessible pointer for \p HstPtr if it belongs to a
+  /// pinned buffer usable by this device, or null otherwise. Buffers locked or
+  /// registered through this device take precedence over the plugin-wide host
+  /// buffers.
+  void *getPinnedDevAccessiblePtr(const void *HstPtr) const {
+    if (void *Ptr = PinnedAllocs.getDeviceAccessiblePtrFromPinnedBuffer(HstPtr))
+      return Ptr;
+    return PluginHostAllocs.getDeviceAccessiblePtrFromPinnedBuffer(HstPtr);
+  }
+
   /// Submit data to the device (host to device transfer).
   Error dataSubmitImpl(void *TgtPtr, const void *HstPtr, int64_t Size,
                        AsyncInfoWrapperTy &AsyncInfoWrapper,
@@ -2983,8 +2998,7 @@ struct AMDGPUDeviceTy : public GenericDeviceTy, AMDGenericDeviceTy {
     auto ProfilerSpecificData = getOrNullProfilerSpecificData(AsyncInfoWrapper);
 
     // Use one-step asynchronous operation when host memory is already pinned.
-    if (void *PinnedPtr =
-            PinnedAllocs.getDeviceAccessiblePtrFromPinnedBuffer(HstPtr)) {
+    if (void *PinnedPtr = getPinnedDevAccessiblePtr(HstPtr)) {
       if (auto Err = getStream(AsyncInfoWrapper, Stream))
         return Err;
       return Stream->pushPinnedMemoryCopyAsync(TgtPtr, PinnedPtr, Size);
@@ -3046,8 +3060,7 @@ struct AMDGPUDeviceTy : public GenericDeviceTy, AMDGenericDeviceTy {
     auto ProfilerSpecificData = getOrNullProfilerSpecificData(AsyncInfoWrapper);
 
     // Use one-step asynchronous operation when host memory is already pinned.
-    if (void *PinnedPtr =
-            PinnedAllocs.getDeviceAccessiblePtrFromPinnedBuffer(HstPtr)) {
+    if (void *PinnedPtr = getPinnedDevAccessiblePtr(HstPtr)) {
       if (auto Err = getStream(AsyncInfoWrapper, Stream))
         return Err;
 
@@ -3869,6 +3882,11 @@ private:
   /// Reference to the host device.
   AMDHostDeviceTy &HostDevice;
 
+  /// Plugin-wide registry of the host and shared buffers that every kernel
+  /// agent can access, owned by the plugin. Buffers that only some agents can
+  /// access are tracked in this device's PinnedAllocs instead.
+  PinnedAllocationMapTy &PluginHostAllocs;
+
   /// The current size of the stack that will be used in cases where it could
   /// not be statically determined.
   uint64_t StackSize = 16 * 1024 /* 16 KB */;
@@ -4138,16 +4156,24 @@ struct AMDGPUPluginContextTy final : public PluginContextTy {
   Expected<void *> allocate(GenericDeviceTy &Device, int64_t Size,
                             void *HostPtr, TargetAllocTy Kind, size_t Alignment,
                             GenericProfilerTy *ProfilerPtr) override;
+  Expected<void *> allocateHost(int64_t Size, size_t Alignment,
+                                GenericProfilerTy *ProfilerPtr) override;
   Error deallocate(GenericDeviceTy &Device, void *Ptr, TargetAllocTy Kind,
                    GenericProfilerTy *ProfilerPtr) override;
+  Error deallocateHost(void *Ptr, GenericProfilerTy *ProfilerPtr) override;
   Expected<PluginAllocInfoTy> getAllocInfo(const void *Ptr) override;
 
 private:
   // Track each allocation's Kind so we can tell HOST from SHARED — HSA
   // backs both with the same host fine-grained pool.
   // TODO: drop once TARGET_ALLOC_SHARED has its own backing pool.
+  //
+  // Entries are keyed by the returned pointer but looked up by the HSA base
+  // address. They match because AMDGPU memory pools reject alignments larger
+  // than their own, so the memory manager never shifts the returned pointer.
   struct AllocInfo {
     TargetAllocTy Kind;
+    /// Owning device; null for host allocations.
     GenericDeviceTy *Device;
   };
   llvm::DenseMap<const void *, AllocInfo> Allocations;
@@ -4264,7 +4290,7 @@ struct AMDGPUPluginTy final : public GenericPluginTy {
                                 int32_t NumDevices) override {
     hsa_agent_t Agent = getKernelAgent(DeviceId);
     return new AMDGPUDeviceTy(Plugin, DeviceId, NumDevices,
-                              getNearestHostDevice(Agent), Agent);
+                              getNearestHostDevice(Agent), Agent, HostAllocs);
   }
 
   Expected<std::unique_ptr<PluginContextTy>>
@@ -4478,6 +4504,12 @@ private:
 
   /// The host devices, one per HSA host agent.
   llvm::SmallVector<AMDHostDeviceTy *> HostDevices;
+
+  /// Host and shared buffers allocated from fine-grained host pools that every
+  /// kernel agent can access. HSA has no notion of contexts and the host
+  /// pointer is also the agent pointer, so any device can use them as pinned
+  /// memory for transfers.
+  PinnedAllocationMapTy HostAllocs;
 };
 
 Expected<void *> AMDGPUPluginContextTy::allocate(
@@ -4489,6 +4521,17 @@ Expected<void *> AMDGPUPluginContextTy::allocate(
     return PtrOrErr;
   std::lock_guard<std::mutex> Lock(AllocationsMutex);
   Allocations[*PtrOrErr] = {Kind, &Device};
+  return PtrOrErr;
+}
+
+Expected<void *>
+AMDGPUPluginContextTy::allocateHost(int64_t Size, size_t Alignment,
+                                    GenericProfilerTy *ProfilerPtr) {
+  auto PtrOrErr = PluginContextTy::allocateHost(Size, Alignment, ProfilerPtr);
+  if (!PtrOrErr || !*PtrOrErr)
+    return PtrOrErr;
+  std::lock_guard<std::mutex> Lock(AllocationsMutex);
+  Allocations[*PtrOrErr] = {TARGET_ALLOC_HOST, nullptr};
   return PtrOrErr;
 }
 
@@ -4504,6 +4547,16 @@ Error AMDGPUPluginContextTy::deallocate(GenericDeviceTy &Device, void *Ptr,
     Allocations.erase(Ptr);
   }
   return PluginContextTy::deallocate(Device, Ptr, Kind, ProfilerPtr);
+}
+
+Error AMDGPUPluginContextTy::deallocateHost(void *Ptr,
+                                            GenericProfilerTy *ProfilerPtr) {
+  // Erase before base deallocateHost, for the same reason as in deallocate.
+  {
+    std::lock_guard<std::mutex> Lock(AllocationsMutex);
+    Allocations.erase(Ptr);
+  }
+  return PluginContextTy::deallocateHost(Ptr, ProfilerPtr);
 }
 
 Expected<PluginAllocInfoTy>
@@ -4766,21 +4819,28 @@ Expected<void *> AMDGPUDeviceTy::allocate(size_t Size, void *,
     // Get a list of agents that can access this memory pool. Inherently
     // necessary for host or shared allocations Also enabled for device memory
     // to allow device to device memcpy
+    const auto &KernelAgents =
+        static_cast<AMDGPUPluginTy &>(Plugin).getKernelAgents();
     llvm::SmallVector<hsa_agent_t> Agents;
-    llvm::copy_if(static_cast<AMDGPUPluginTy &>(Plugin).getKernelAgents(),
-                  std::back_inserter(Agents), [&](hsa_agent_t Agent) {
-                    return MemoryPool->canAccess(Agent);
-                  });
+    llvm::copy_if(
+        KernelAgents, std::back_inserter(Agents),
+        [&](hsa_agent_t Agent) { return MemoryPool->canAccess(Agent); });
 
     // Enable all valid kernel agents to access the buffer.
     if (auto Err = MemoryPool->enableAccess(Alloc, Size, Agents))
       return std::move(Err);
 
     // Register host / shared memory as pinned memory, so that transfers reading
-    // from it can take a device-accessible path.
-    if (Kind == TARGET_ALLOC_HOST || Kind == TARGET_ALLOC_SHARED)
-      if (auto Err = PinnedAllocs.registerHostBuffer(Alloc, Alloc, Size))
+    // from it can take a device-accessible path. When every kernel agent can
+    // access the buffer, register it plugin-wide so that transfers on any
+    // device take that path; otherwise only this device knows about it.
+    if (Kind == TARGET_ALLOC_HOST || Kind == TARGET_ALLOC_SHARED) {
+      PinnedAllocationMapTy &Allocs = Agents.size() == KernelAgents.size()
+                                          ? PluginHostAllocs
+                                          : PinnedAllocs;
+      if (auto Err = Allocs.registerHostBuffer(Alloc, Alloc, Size))
         return std::move(Err);
+    }
   }
 
   return Alloc;

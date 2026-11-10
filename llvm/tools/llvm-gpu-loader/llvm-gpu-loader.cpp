@@ -90,8 +90,7 @@ static cl::list<std::string> Args(cl::ConsumeAfter,
     handleError(Err, __LINE__);
 
 static void *copyArgumentVector(int Argc, const char **Argv,
-                                ol_context_handle_t Context,
-                                ol_device_handle_t Device) {
+                                ol_context_handle_t Context) {
   size_t ArgSize = sizeof(char *) * (Argc + 1);
   size_t StringLen = 0;
   for (int i = 0; i < Argc; ++i)
@@ -99,7 +98,7 @@ static void *copyArgumentVector(int Argc, const char **Argv,
 
   // We allocate enough space for a null terminated array and all the strings.
   void *DevArgv;
-  OFFLOAD_ERR(olMemAllocHost(Context, Device, ArgSize + StringLen, &DevArgv));
+  OFFLOAD_ERR(olMemAllocHost(Context, ArgSize + StringLen, &DevArgv));
   if (!DevArgv)
     handleError(
         createStringError("Failed to allocate memory for environment."));
@@ -118,13 +117,12 @@ static void *copyArgumentVector(int Argc, const char **Argv,
   return DevArgv;
 }
 
-void *copyEnvironment(const char **Envp, ol_context_handle_t Context,
-                      ol_device_handle_t Device) {
+void *copyEnvironment(const char **Envp, ol_context_handle_t Context) {
   int Envc = 0;
   for (const char **Env = Envp; *Env != 0; ++Env)
     ++Envc;
 
-  return copyArgumentVector(Envc, Envp, Context, Device);
+  return copyArgumentVector(Envc, Envp, Context);
 }
 
 ol_device_handle_t findDevice(MemoryBufferRef Binary) {
@@ -257,9 +255,8 @@ int main(int argc, const char **argv, const char **envp) {
   OFFLOAD_ERR(olCreateQueue(Context, Device, &Queue));
 
   int DevArgc = static_cast<int>(NewArgv.size());
-  void *DevArgv =
-      copyArgumentVector(NewArgv.size(), NewArgv.begin(), Context, Device);
-  void *DevEnvp = copyEnvironment(envp, Context, Device);
+  void *DevArgv = copyArgumentVector(NewArgv.size(), NewArgv.begin(), Context);
+  void *DevEnvp = copyEnvironment(envp, Context);
 
   void *DevRet;
   int Zero = 0;

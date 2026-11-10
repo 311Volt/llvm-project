@@ -64,38 +64,50 @@ Error LevelZeroPluginContextTy::initAllocators() {
 Expected<void *> LevelZeroPluginContextTy::allocate(
     GenericDeviceTy &Device, int64_t Size, void * /*HostPtr*/,
     TargetAllocTy Kind, size_t Alignment, GenericProfilerTy * /*ProfilerPtr*/) {
-  MemAllocatorTy *Allocator = nullptr;
-  int32_t ResolvedKind = Kind;
-  if (Kind == TARGET_ALLOC_HOST) {
-    Allocator = &HostAllocator;
-  } else {
-    if (ResolvedKind == TARGET_ALLOC_DEFAULT)
-      ResolvedKind = TARGET_ALLOC_DEVICE;
-    auto &L0Device = static_cast<L0DeviceTy &>(Device);
-    auto It = DeviceAllocators.find(&L0Device);
-    if (It == DeviceAllocators.end())
-      return Plugin::error(ErrorCode::INVALID_DEVICE,
-                           "device is not part of this context");
-    Allocator = It->second.get();
-  }
-  return Allocator->alloc(Size, Alignment, ResolvedKind, /*Offset=*/0,
-                          /*UserAlloc=*/true, /*DevMalloc=*/false,
-                          /*MemAdvice=*/
-                          std::numeric_limits<uint32_t>::max(),
-                          AllocOptionTy::ALLOC_OPT_NONE);
+  if (Kind == TARGET_ALLOC_HOST)
+    return Plugin::error(ErrorCode::INVALID_ARGUMENT,
+                         "host memory is not device-bound, use allocateHost");
+  int32_t ResolvedKind =
+      Kind == TARGET_ALLOC_DEFAULT ? TARGET_ALLOC_DEVICE : Kind;
+  auto &L0Device = static_cast<L0DeviceTy &>(Device);
+  auto It = DeviceAllocators.find(&L0Device);
+  if (It == DeviceAllocators.end())
+    return Plugin::error(ErrorCode::INVALID_DEVICE,
+                         "device is not part of this context");
+  return It->second->alloc(Size, Alignment, ResolvedKind, /*Offset=*/0,
+                           /*UserAlloc=*/true, /*DevMalloc=*/false,
+                           /*MemAdvice=*/
+                           std::numeric_limits<uint32_t>::max(),
+                           AllocOptionTy::ALLOC_OPT_NONE);
+}
+
+Expected<void *>
+LevelZeroPluginContextTy::allocateHost(int64_t Size, size_t Alignment,
+                                       GenericProfilerTy * /*ProfilerPtr*/) {
+  return HostAllocator.alloc(Size, Alignment, TARGET_ALLOC_HOST, /*Offset=*/0,
+                             /*UserAlloc=*/true, /*DevMalloc=*/false,
+                             /*MemAdvice=*/
+                             std::numeric_limits<uint32_t>::max(),
+                             AllocOptionTy::ALLOC_OPT_NONE);
 }
 
 Error LevelZeroPluginContextTy::deallocate(
     GenericDeviceTy &Device, void *Ptr, TargetAllocTy Kind,
     GenericProfilerTy * /*ProfilerPtr*/) {
   if (Kind == TARGET_ALLOC_HOST)
-    return HostAllocator.dealloc(Ptr);
+    return Plugin::error(ErrorCode::INVALID_ARGUMENT,
+                         "host memory is not device-bound, use deallocateHost");
   auto &L0Device = static_cast<L0DeviceTy &>(Device);
   auto It = DeviceAllocators.find(&L0Device);
   if (It == DeviceAllocators.end())
     return Plugin::error(ErrorCode::INVALID_DEVICE,
                          "device is not part of this context");
   return It->second->dealloc(Ptr);
+}
+
+Error LevelZeroPluginContextTy::deallocateHost(
+    void *Ptr, GenericProfilerTy * /*ProfilerPtr*/) {
+  return HostAllocator.dealloc(Ptr);
 }
 
 Expected<PluginAllocInfoTy>

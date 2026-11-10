@@ -30,7 +30,7 @@ TEST_P(olMemIsAccessibleTest, SuccessDeviceAllocation) {
 
 TEST_P(olMemIsAccessibleTest, SuccessHostAllocation) {
   void *Ptr = nullptr;
-  ASSERT_SUCCESS(olMemAllocHost(Context, Device, 1024, &Ptr));
+  ASSERT_SUCCESS(olMemAllocHost(Context, 1024, &Ptr));
   ASSERT_NE(Ptr, nullptr);
 
   bool IsAccessible = false;

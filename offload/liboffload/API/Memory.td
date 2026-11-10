@@ -60,22 +60,19 @@ def olMemAlloc : Function {
 }
 
 def olMemAllocHost : Function {
-  let desc = "Creates a host memory allocation accessible from the specified device.";
+  let desc = "Creates a host memory allocation accessible from every device in the context.";
   let details = [
-      "The allocation is scoped to `Context` and `Device` must belong to it."
+      "The allocation is scoped to `Context`.",
+      "Host allocations are not bound to a device, so `OL_MEM_INFO_DEVICE` is not valid for them."
   ];
   let params = [
     Param<"ol_context_handle_t", "Context", "handle of the context", PARAM_IN>,
-    Param<"ol_device_handle_t", "Device", "handle of the device to allocate on", PARAM_IN>,
     Param<"size_t", "Size", "size of the allocation in bytes", PARAM_IN>,
     Param<"void**", "AllocationOut", "output for the allocated pointer", PARAM_OUT>
   ];
   let returns = [
     Return<"OL_ERRC_INVALID_SIZE", [
       "`Size == 0`"
-    ]>,
-    Return<"OL_ERRC_INVALID_DEVICE", [
-      "Device does not belong to `Context`"
     ]>
   ];
 }
@@ -116,13 +113,13 @@ def olMemAllocAligned : Function {
 }
 
 def olMemAllocAlignedHost : Function {
-  let desc = "Creates a host memory allocation with the specified alignment.";
+  let desc = "Creates a host memory allocation with the specified alignment, accessible from every device in the context.";
   let details = [
-      "The allocation is scoped to `Context` and `Device` must belong to it."
+      "The allocation is scoped to `Context`.",
+      "Host allocations are not bound to a device, so `OL_MEM_INFO_DEVICE` is not valid for them."
   ];
   let params = [
     Param<"ol_context_handle_t", "Context", "handle of the context", PARAM_IN>,
-    Param<"ol_device_handle_t", "Device", "handle of the device to allocate on", PARAM_IN>,
     Param<"size_t", "Size", "size of the allocation in bytes", PARAM_IN>,
     Param<"size_t", "Alignment",
                "alignment of the allocation in bytes. Must be non-zero and a power of two",
@@ -138,9 +135,6 @@ def olMemAllocAlignedHost : Function {
     ]>,
     Return<"OL_ERRC_INVALID_ARGUMENT", [
       "`(Alignment & (Alignment - 1)) != 0`"
-    ]>,
-    Return<"OL_ERRC_INVALID_DEVICE", [
-      "Device does not belong to `Context`"
     ]>,
   ];
 }

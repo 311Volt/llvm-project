@@ -22,8 +22,7 @@ struct olMemAllocAlignedTypesTest
                                    void **Alloc) {
     ol_alloc_type_t AllocType = getTestParam();
     if (AllocType == OL_ALLOC_TYPE_HOST) {
-      return olMemAllocAlignedHost(this->Context, this->Device, Size, Alignment,
-                                   Alloc);
+      return olMemAllocAlignedHost(this->Context, Size, Alignment, Alloc);
     }
 
     return olMemAllocAligned(this->Context, this->Device, AllocType, Size,
@@ -49,8 +48,8 @@ TEST_P(olMemAllocAlignedTest, SuccessAllocMany) {
     void *Alloc = nullptr;
     ol_alloc_type_t AllocType = AllocTypes[I % 3];
     if (AllocType == OL_ALLOC_TYPE_HOST) {
-      ASSERT_SUCCESS(olMemAllocAlignedHost(
-          Context, Device, DefaultAllocSize * I, DefaultAlignment, &Alloc));
+      ASSERT_SUCCESS(olMemAllocAlignedHost(Context, DefaultAllocSize * I,
+                                           DefaultAlignment, &Alloc));
     } else {
       ASSERT_SUCCESS(olMemAllocAligned(Context, Device, AllocType,
                                        DefaultAllocSize * I, DefaultAlignment,

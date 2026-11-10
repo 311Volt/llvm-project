@@ -599,8 +599,9 @@ class PinnedAllocationMapTy {
   /// The mutex to protect accesses to the map.
   mutable std::shared_mutex Mutex;
 
-  /// Reference to the corresponding device.
-  GenericDeviceTy &Device;
+  /// The corresponding device, or null for a device-less map. A device-less
+  /// map only supports registerHostBuffer, unregisterHostBuffer and lookups.
+  GenericDeviceTy *Device = nullptr;
 
   /// Find an allocation that intersects with \p HstPtr pointer. Assume the
   /// map's mutex is acquired.
@@ -667,7 +668,10 @@ class PinnedAllocationMapTy {
 
 public:
   /// Create the map of pinned allocations corresponding to a specific device.
-  PinnedAllocationMapTy(GenericDeviceTy &Device) : Device(Device) {}
+  PinnedAllocationMapTy(GenericDeviceTy &Device) : Device(&Device) {}
+
+  /// Create a device-less map, e.g. for plugin-wide host buffers.
+  PinnedAllocationMapTy() = default;
 
   /// Register a buffer that was recently allocated as a locked host buffer.
   /// None of the already registered pinned allocations should intersect with
@@ -726,6 +730,8 @@ public:
 
 /// Description of an allocation: owning device, kind, base address and size.
 struct PluginAllocInfoTy {
+  /// Owning device; null exactly for host allocations, which are not bound to
+  /// a device.
   GenericDeviceTy *Device;
   TargetAllocTy Kind;
   void *Base;
@@ -758,25 +764,37 @@ struct PluginContextTy {
   virtual Error initAsyncInfoImpl(GenericDeviceTy &Device,
                                   AsyncInfoWrapperTy &AsyncInfoWrapper) = 0;
 
-  /// Allocate Size bytes of Kind memory accessible from Device. HostPtr is an
-  /// optional hint (e.g. for pinned-buffer registration); pass nullptr when
-  /// unused.
+  /// Allocate Size bytes of device-bound Kind memory (device or shared) on
+  /// Device. HostPtr is an optional hint (e.g. for pinned-buffer registration);
+  /// pass nullptr when unused. Host memory is not device-bound: use
+  /// allocateHost instead, TARGET_ALLOC_HOST is rejected here.
   virtual llvm::Expected<void *>
   allocate(GenericDeviceTy &Device, int64_t Size, void *HostPtr,
            TargetAllocTy Kind, size_t Alignment,
            GenericProfilerTy *ProfilerPtr = nullptr);
 
-  /// Free a pointer returned by allocate; resolves owner/kind via
-  /// getAllocInfo. Requires a non-empty device set, so this is only valid on
-  /// user-created contexts (not on the per-plugin default context, which
+  /// Allocate Size bytes of host memory accessible from every device of this
+  /// context. Requires a non-empty device set.
+  virtual llvm::Expected<void *>
+  allocateHost(int64_t Size, size_t Alignment,
+               GenericProfilerTy *ProfilerPtr = nullptr);
+
+  /// Free a pointer returned by allocate or allocateHost; resolves owner/kind
+  /// via getAllocInfo. Requires a non-empty device set, so this is only valid
+  /// on user-created contexts (not on the per-plugin default context, which
   /// carries no devices).
   virtual llvm::Error deallocate(void *Ptr,
                                  GenericProfilerTy *ProfilerPtr = nullptr);
 
-  /// Free a pointer when the caller already knows the owning device and kind.
+  /// Free a pointer returned by allocate when the caller already knows the
+  /// owning device and kind. TARGET_ALLOC_HOST is rejected here.
   virtual llvm::Error deallocate(GenericDeviceTy &Device, void *Ptr,
                                  TargetAllocTy Kind,
                                  GenericProfilerTy *ProfilerPtr = nullptr);
+
+  /// Free a pointer returned by allocateHost.
+  virtual llvm::Error deallocateHost(void *Ptr,
+                                     GenericProfilerTy *ProfilerPtr = nullptr);
 
   /// Look up the allocation containing Ptr. Returns NOT_FOUND when Ptr is not
   /// known to this context. Only valid on user-created contexts.
@@ -794,6 +812,12 @@ protected:
   llvm::SmallVector<GenericDeviceTy *> Devices;
 
 private:
+  /// Device whose allocator backs this context's host allocations, or null if
+  /// the context has no devices.
+  GenericDeviceTy *getHostAllocDevice() const {
+    return Devices.empty() ? nullptr : Devices.front();
+  }
+
   MemoryManagerTy *getDeviceMemoryManagerFor(GenericDeviceTy &Device,
                                              TargetAllocTy Kind);
   MemoryManagerTy *getHostMemoryManager();

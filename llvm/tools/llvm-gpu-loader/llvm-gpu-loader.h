@@ -157,8 +157,7 @@ ol_result_t (*olMemAlloc)(ol_context_handle_t Context,
                           ol_device_handle_t Device, ol_alloc_type_t Type,
                           size_t Size, void **AllocationOut);
 
-ol_result_t (*olMemAllocHost)(ol_context_handle_t Context,
-                              ol_device_handle_t Device, size_t Size,
+ol_result_t (*olMemAllocHost)(ol_context_handle_t Context, size_t Size,
                               void **AllocationOut);
 
 ol_result_t (*olMemFree)(ol_context_handle_t Context, void *Address);

@@ -122,10 +122,8 @@ Error_t SetDevice(int DeviceNo) {
 }
 
 Error_t HostAlloc(void **Ptr, size_t Size, unsigned int Flags) {
-  ThreadStateTy &ThreadState = ThreadStateTy::get();
-  ol_device_handle_t Device = ThreadState.getDefaultDevice();
   ol_context_handle_t Context = StateTy::get().getContext();
-  ol_result_t Result = olMemAllocHost(Context, Device, Size, Ptr);
+  ol_result_t Result = olMemAllocHost(Context, Size, Ptr);
   return convertAndSetLastError(Result);
 }
 

@@ -373,10 +373,9 @@ void mock::MockLiboffload::initDefault() {
       });
 
   ON_CALL(*this, olMemAllocHost)
-      .WillByDefault([](ol_context_handle_t Context, ol_device_handle_t Device,
-                        size_t Size, void **AllocationOut) -> ol_result_t {
+      .WillByDefault([](ol_context_handle_t Context, size_t Size,
+                        void **AllocationOut) -> ol_result_t {
         EXPECT_NE(Context, nullptr);
-        EXPECT_NE(Device, nullptr);
         EXPECT_GT(Size, 0);
         EXPECT_NE(AllocationOut, nullptr);
         *AllocationOut = mock::createDummyHandle<void *>(Size);
@@ -413,12 +412,10 @@ void mock::MockLiboffload::initDefault() {
           });
 
   ON_CALL(*this, olMemAllocAlignedHost)
-      .WillByDefault([this](ol_context_handle_t Context,
-                            ol_device_handle_t Device, size_t Size,
+      .WillByDefault([this](ol_context_handle_t Context, size_t Size,
                             size_t Alignment,
                             void **AllocationOut) -> ol_result_t {
         EXPECT_NE(Context, nullptr);
-        EXPECT_NE(Device, nullptr);
         EXPECT_GT(Size, 0);
         EXPECT_GT(Alignment, 0);
         if ((Alignment & (Alignment - 1)) != 0) {

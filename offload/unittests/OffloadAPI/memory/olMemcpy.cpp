@@ -139,10 +139,10 @@ TEST_P(olMemcpyTest, SuccessHtoHQueuedOrderingHostAlloc) {
 
   ASSERT_SUCCESS(
       olMemAlloc(Context, Device, OL_ALLOC_TYPE_DEVICE, Size, &Alloc));
-  ASSERT_SUCCESS(olMemAllocHost(Context, Device, Size, &Input));
-  ASSERT_SUCCESS(olMemAllocHost(Context, Device, Size, &Intermediate));
-  ASSERT_SUCCESS(olMemAllocHost(Context, Device, Size, &Copied));
-  ASSERT_SUCCESS(olMemAllocHost(Context, Device, Size, &Output));
+  ASSERT_SUCCESS(olMemAllocHost(Context, Size, &Input));
+  ASSERT_SUCCESS(olMemAllocHost(Context, Size, &Intermediate));
+  ASSERT_SUCCESS(olMemAllocHost(Context, Size, &Copied));
+  ASSERT_SUCCESS(olMemAllocHost(Context, Size, &Output));
 
   std::memset(Input, 42, Size);
   std::memset(Intermediate, 0, Size);

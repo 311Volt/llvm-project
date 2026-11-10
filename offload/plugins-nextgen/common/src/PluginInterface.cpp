@@ -423,6 +423,10 @@ Expected<void *> PinnedAllocationMapTy::registerMemory(void *HstPtr,
   assert(HstPtr && "Invalid pointer");
   assert(Size && "Invalid size");
 
+  if (!Device)
+    return Plugin::error(ErrorCode::UNSUPPORTED,
+                         "cannot register memory in a device-less map");
+
   std::lock_guard<std::shared_mutex> Lock(Mutex);
 
   const EntryTy *Entry = findIntersecting(HstPtr);
@@ -441,17 +445,19 @@ Expected<void *> PinnedAllocationMapTy::registerMemory(void *HstPtr,
   void *BaseHstPtr, *BaseDevAccessiblePtr;
 
   // Check if it was externally pinned by a vendor-specific API.
-  auto IsPinnedOrErr = Device.isPinnedPtrImpl(HstPtr, BaseHstPtr,
-                                              BaseDevAccessiblePtr, BaseSize);
+  auto IsPinnedOrErr = Device->isPinnedPtrImpl(HstPtr, BaseHstPtr,
+                                               BaseDevAccessiblePtr, BaseSize);
   if (!IsPinnedOrErr)
     return IsPinnedOrErr.takeError();
 
-  // If pinned, just insert the entry representing the whole pinned buffer.
+  // If pinned, just insert the entry representing the whole pinned buffer and
+  // return the device accessible pointer with the correct offset.
   if (*IsPinnedOrErr) {
     if (auto Err = insertEntry(BaseHstPtr, BaseDevAccessiblePtr, BaseSize,
                                /*Externallylocked=*/true))
       return std::move(Err);
-    return BaseDevAccessiblePtr;
+    return utils::advancePtr(BaseDevAccessiblePtr,
+                             utils::getPtrDiff(HstPtr, BaseHstPtr));
   }
 
   // Not externally pinned. Do nothing if locking of mapped buffers is disabled.
@@ -460,7 +466,7 @@ Expected<void *> PinnedAllocationMapTy::registerMemory(void *HstPtr,
 
   // No intersecting registered allocation found in the map. First, lock the
   // host buffer and retrieve the device accessible pointer.
-  auto DevAccessiblePtrOrErr = Device.dataLockImpl(HstPtr, Size);
+  auto DevAccessiblePtrOrErr = Device->dataLockImpl(HstPtr, Size);
   if (!DevAccessiblePtrOrErr)
     return DevAccessiblePtrOrErr.takeError();
 
@@ -474,6 +480,10 @@ Expected<void *> PinnedAllocationMapTy::registerMemory(void *HstPtr,
 
 Error PinnedAllocationMapTy::unregisterMemory(void *HstPtr, bool UnlockMemory) {
   assert(HstPtr && "Invalid pointer");
+
+  if (!Device)
+    return Plugin::error(ErrorCode::UNSUPPORTED,
+                         "cannot unregister memory in a device-less map");
 
   std::lock_guard<std::shared_mutex> Lock(Mutex);
 
@@ -502,7 +512,7 @@ Error PinnedAllocationMapTy::unregisterMemory(void *HstPtr, bool UnlockMemory) {
   // if it was locked by the plugin. Do not unlock it if it was locked by an
   // external entity. Unlock the buffer using the host pointer of the entry.
   if (!Entry->ExternallyLocked)
-    if (auto Err = Device.dataUnlockImpl(Entry->HstPtr))
+    if (auto Err = Device->dataUnlockImpl(Entry->HstPtr))
       return Err;
 
   // Erase the entry from the map.
@@ -599,7 +609,10 @@ Expected<void *> GenericDeviceTy::dataAlloc(int64_t Size, void *HostPtr,
   void *Alloc = nullptr;
 
   // TODO Check alignment.
-  if (RecordReplay && RecordReplay->isRecordingOrReplaying())
+  // Host memory must stay host accessible, so it is never carved out of the
+  // record-replay device memory. dataDelete makes the same decision.
+  if (Kind != TARGET_ALLOC_HOST && RecordReplay &&
+      RecordReplay->isRecordingOrReplaying())
     return RecordReplay->allocate(Size);
 
   auto AllocOrErr = allocate(Size, HostPtr, Kind, Alignment);
@@ -646,8 +659,10 @@ Error GenericDeviceTy::dataDelete(void *TgtPtr, TargetAllocTy Kind,
 
   auto ProfTimer = Profiler.getScopedDataDeleteTimer(this, TgtPtr);
 
-  // Free is a noop when recording or replaying.
-  if (RecordReplay && RecordReplay->isRecordingOrReplaying())
+  // Free is a noop when recording or replaying, except for host memory, which
+  // dataAlloc never takes from the record-replay memory.
+  if (Kind != TARGET_ALLOC_HOST && RecordReplay &&
+      RecordReplay->isRecordingOrReplaying())
     return RecordReplay->deallocate(TgtPtr);
 
   // Keep track of the deallocation stack if we track allocation traces.
@@ -801,9 +816,8 @@ PluginContextTy::getDeviceMemoryManagerFor(GenericDeviceTy &Device,
 }
 
 MemoryManagerTy *PluginContextTy::getHostMemoryManager() {
-  if (Devices.empty())
-    return nullptr;
-  if (Devices.front()->OMPX_TrackAllocationTraces)
+  GenericDeviceTy *HostAllocDevice = getHostAllocDevice();
+  if (!HostAllocDevice || HostAllocDevice->OMPX_TrackAllocationTraces)
     return nullptr;
 
   std::lock_guard<std::mutex> Lock(MemoryManagersMutex);
@@ -811,7 +825,7 @@ MemoryManagerTy *PluginContextTy::getHostMemoryManager() {
     return HostMemoryManager.get();
 
   HostMemoryManager = std::make_unique<MemoryManagerTy>(
-      *Devices.front(), MemoryManagerTy::DefaultSizeThreshold,
+      *HostAllocDevice, MemoryManagerTy::DefaultSizeThreshold,
       TARGET_ALLOC_HOST);
   return HostMemoryManager.get();
 }
@@ -820,18 +834,34 @@ Expected<void *> PluginContextTy::allocate(GenericDeviceTy &Device,
                                            int64_t Size, void *HostPtr,
                                            TargetAllocTy Kind, size_t Alignment,
                                            GenericProfilerTy *ProfilerPtr) {
+  if (Kind == TARGET_ALLOC_HOST)
+    return Plugin::error(ErrorCode::INVALID_ARGUMENT,
+                         "host memory is not device-bound, use allocateHost");
+
   // Record-replay hands out interior pointers into a preallocated slab so
   // recorded kernels can re-execute at their original addresses; the MM pool
   // must be bypassed for those allocations to reach the RR bump allocator.
   if (auto *RR = Device.getRecordReplay(); RR && RR->isRecordingOrReplaying())
     return Device.dataAlloc(Size, HostPtr, Kind, Alignment, ProfilerPtr);
 
-  MemoryManagerTy *MM = (Kind == TARGET_ALLOC_HOST)
-                            ? getHostMemoryManager()
-                            : getDeviceMemoryManagerFor(Device, Kind);
-  if (MM)
+  if (MemoryManagerTy *MM = getDeviceMemoryManagerFor(Device, Kind))
     return MM->allocate(Size, HostPtr, Alignment);
   return Device.dataAlloc(Size, HostPtr, Kind, Alignment, ProfilerPtr);
+}
+
+Expected<void *> PluginContextTy::allocateHost(int64_t Size, size_t Alignment,
+                                               GenericProfilerTy *ProfilerPtr) {
+  GenericDeviceTy *HostAllocDevice = getHostAllocDevice();
+  if (!HostAllocDevice)
+    return Plugin::error(ErrorCode::UNSUPPORTED,
+                         "host allocations require a context with devices");
+
+  // Host memory is never taken from the record-replay memory, so there is no
+  // record-replay shortcut here.
+  if (MemoryManagerTy *MM = getHostMemoryManager())
+    return MM->allocate(Size, /*HstPtr=*/nullptr, Alignment);
+  return HostAllocDevice->dataAlloc(Size, /*HostPtr=*/nullptr,
+                                    TARGET_ALLOC_HOST, Alignment, ProfilerPtr);
 }
 
 Error PluginContextTy::deallocate(void *Ptr, GenericProfilerTy *ProfilerPtr) {
@@ -839,26 +869,41 @@ Error PluginContextTy::deallocate(void *Ptr, GenericProfilerTy *ProfilerPtr) {
   auto InfoOrErr = getAllocInfo(Ptr);
   if (!InfoOrErr)
     return InfoOrErr.takeError();
-  GenericDeviceTy *OwnerDevice = InfoOrErr->Device;
-  if (!OwnerDevice)
-    OwnerDevice = Devices.front();
-  return deallocate(*OwnerDevice, Ptr, InfoOrErr->Kind, ProfilerPtr);
+  if (InfoOrErr->Kind == TARGET_ALLOC_HOST)
+    return deallocateHost(Ptr, ProfilerPtr);
+  if (!InfoOrErr->Device)
+    return Plugin::error(ErrorCode::NOT_FOUND,
+                         "allocation has no owning device in this context");
+  return deallocate(*InfoOrErr->Device, Ptr, InfoOrErr->Kind, ProfilerPtr);
 }
 
 Error PluginContextTy::deallocate(GenericDeviceTy &Device, void *Ptr,
                                   TargetAllocTy Kind,
                                   GenericProfilerTy *ProfilerPtr) {
+  if (Kind == TARGET_ALLOC_HOST)
+    return Plugin::error(ErrorCode::INVALID_ARGUMENT,
+                         "host memory is not device-bound, use deallocateHost");
+
   // Symmetric with allocate: record-replay allocations never entered the MM
   // pool, so route their free through dataDelete's RR shortcut.
   if (auto *RR = Device.getRecordReplay(); RR && RR->isRecordingOrReplaying())
     return Device.dataDelete(Ptr, Kind, ProfilerPtr);
 
-  MemoryManagerTy *MM = (Kind == TARGET_ALLOC_HOST)
-                            ? getHostMemoryManager()
-                            : getDeviceMemoryManagerFor(Device, Kind);
-  if (MM)
+  if (MemoryManagerTy *MM = getDeviceMemoryManagerFor(Device, Kind))
     return MM->free(Ptr);
   return Device.dataDelete(Ptr, Kind, ProfilerPtr);
+}
+
+Error PluginContextTy::deallocateHost(void *Ptr,
+                                      GenericProfilerTy *ProfilerPtr) {
+  GenericDeviceTy *HostAllocDevice = getHostAllocDevice();
+  if (!HostAllocDevice)
+    return Plugin::error(ErrorCode::UNSUPPORTED,
+                         "host allocations require a context with devices");
+
+  if (MemoryManagerTy *MM = getHostMemoryManager())
+    return MM->free(Ptr);
+  return HostAllocDevice->dataDelete(Ptr, TARGET_ALLOC_HOST, ProfilerPtr);
 }
 
 PluginContextTy &
@@ -1182,9 +1227,15 @@ void *GenericPluginTy::data_alloc(int32_t DeviceId, int64_t Size, void *HostPtr,
                                   int32_t Kind,
                                   GenericProfilerTy *ProfilerPtr) {
   auto &Device = getDevice(DeviceId);
-  auto AllocOrErr = getDefaultContext(Device).allocate(
-      Device, Size, HostPtr, static_cast<TargetAllocTy>(Kind),
-      /*Alignment=*/0, ProfilerPtr);
+  auto AllocKind = static_cast<TargetAllocTy>(Kind);
+  // Host memory is not device-bound and the device-less default context has
+  // no host pool, so the requested device allocates it directly.
+  auto AllocOrErr =
+      AllocKind == TARGET_ALLOC_HOST
+          ? Device.dataAlloc(Size, HostPtr, AllocKind, /*Alignment=*/0,
+                             ProfilerPtr)
+          : getDefaultContext(Device).allocate(Device, Size, HostPtr, AllocKind,
+                                               /*Alignment=*/0, ProfilerPtr);
 
   if (!AllocOrErr) {
     REPORT() << "Failure to allocate device memory: "
@@ -1199,8 +1250,11 @@ int32_t GenericPluginTy::data_delete(int32_t DeviceId, void *TgtPtr,
                                      int32_t Kind,
                                      GenericProfilerTy *ProfilerPtr) {
   auto &Device = getDevice(DeviceId);
-  if (auto Err = getDefaultContext(Device).deallocate(
-          Device, TgtPtr, static_cast<TargetAllocTy>(Kind), ProfilerPtr)) {
+  auto AllocKind = static_cast<TargetAllocTy>(Kind);
+  if (auto Err = AllocKind == TARGET_ALLOC_HOST
+                     ? Device.dataDelete(TgtPtr, AllocKind, ProfilerPtr)
+                     : getDefaultContext(Device).deallocate(
+                           Device, TgtPtr, AllocKind, ProfilerPtr)) {
     REPORT() << "Failure to deallocate device pointer " << TgtPtr << ": "
              << toString(std::move(Err));
     return OFFLOAD_FAIL;

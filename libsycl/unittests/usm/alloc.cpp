@@ -62,20 +62,17 @@ TEST(USMFunctions, HostAllocation) {
   mock::MockWrapper Mock;
   queue Q;
   context Ctx = Q.get_context();
-  ol_device_handle_t OLDev =
-      detail::getSyclObjImpl(Q.get_device())->getOLHandle();
 
-  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, _, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(), olMemAllocHost(_, OLDev, NumBytes, _)).Times(1);
+  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, _, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocHost(_, NumBytes, _)).Times(1);
   void *Ptr1 = malloc_host(NumBytes, Ctx);
   EXPECT_NE(Ptr1, nullptr);
 
   EXPECT_CALL(Mock.get(), olMemFree(_, Ptr1)).Times(1);
   free(Ptr1, Ctx);
 
-  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(),
-              olMemAllocAlignedHost(_, OLDev, NumBytes, Alignment, _))
+  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, NumBytes, Alignment, _))
       .Times(1);
   void *Ptr2 = aligned_alloc_host(Alignment, NumBytes, Ctx);
   EXPECT_NE(Ptr2, nullptr);
@@ -119,9 +116,9 @@ TEST(USMFunctions, ZeroByteAllocation) {
   context Ctx = Q.get_context();
 
   EXPECT_CALL(Mock.get(), olMemAlloc(_, _, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _)).Times(0);
   EXPECT_CALL(Mock.get(), olMemAllocAligned(_, _, _, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, _, _, _)).Times(0);
 
   EXPECT_EQ(malloc_device(0, Dev, Ctx), nullptr);
   EXPECT_EQ(malloc_shared(0, Dev, Ctx), nullptr);
@@ -138,7 +135,7 @@ TEST(USMFunctions, InvalidAlignment) {
   constexpr size_t NonPowerOf2Alignment = 3;
 
   EXPECT_CALL(Mock.get(), olMemAlloc(_, _, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _)).Times(0);
 
   EXPECT_CALL(Mock.get(), olMemAllocAligned(_, OLDev, OL_ALLOC_TYPE_DEVICE,
                                             NumBytes, NonPowerOf2Alignment, _))
@@ -146,8 +143,8 @@ TEST(USMFunctions, InvalidAlignment) {
   EXPECT_EQ(aligned_alloc_device(NonPowerOf2Alignment, NumBytes, Dev, Ctx),
             nullptr);
 
-  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, OLDev, NumBytes,
-                                                NonPowerOf2Alignment, _))
+  EXPECT_CALL(Mock.get(),
+              olMemAllocAlignedHost(_, NumBytes, NonPowerOf2Alignment, _))
       .Times(1);
   EXPECT_EQ(aligned_alloc_host(NonPowerOf2Alignment, NumBytes, Ctx), nullptr);
 
@@ -168,7 +165,7 @@ TEST(USMFunctions, ZeroAlignmentSucceeds) {
   constexpr size_t ZeroAlignment = 0;
 
   EXPECT_CALL(Mock.get(), olMemAllocAligned(_, _, _, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, _, _, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocAlignedHost(_, _, _, _)).Times(0);
 
   EXPECT_CALL(Mock.get(),
               olMemAlloc(_, OLDev, OL_ALLOC_TYPE_DEVICE, NumBytes, _))
@@ -178,7 +175,7 @@ TEST(USMFunctions, ZeroAlignmentSucceeds) {
   EXPECT_CALL(Mock.get(), olMemFree(_, Ptr1)).Times(1);
   free(Ptr1, Ctx);
 
-  EXPECT_CALL(Mock.get(), olMemAllocHost(_, OLDev, NumBytes, _)).Times(1);
+  EXPECT_CALL(Mock.get(), olMemAllocHost(_, NumBytes, _)).Times(1);
   void *Ptr2 = aligned_alloc_host(ZeroAlignment, NumBytes, Ctx);
   EXPECT_NE(Ptr2, nullptr);
   EXPECT_CALL(Mock.get(), olMemFree(_, Ptr2)).Times(1);
@@ -200,7 +197,7 @@ TEST(USMFunctions, UnknownAllocationKindThrows) {
   context Ctx = Q.get_context();
 
   EXPECT_CALL(Mock.get(), olMemAlloc(_, _, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _)).Times(0);
 
   try {
     sycl::malloc(NumBytes, Dev, Ctx, usm::alloc::unknown);
@@ -278,7 +275,7 @@ TEST(USMFunctions, TemplatedAlignment) {
   ol_device_handle_t OLDev = detail::getSyclObjImpl(Dev)->getOLHandle();
 
   EXPECT_CALL(Mock.get(), olMemAlloc(_, _, _, _, _)).Times(0);
-  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _, _)).Times(0);
+  EXPECT_CALL(Mock.get(), olMemAllocHost(_, _, _)).Times(0);
 
   EXPECT_CALL(Mock.get(), olMemAllocAligned(_, OLDev, OL_ALLOC_TYPE_DEVICE,
                                             sizeof(Over), alignof(Over), _))
@@ -297,7 +294,7 @@ TEST(USMFunctions, TemplatedAlignment) {
   free(P2, Ctx);
 
   EXPECT_CALL(Mock.get(),
-              olMemAllocAlignedHost(_, OLDev, sizeof(Over), alignof(Over), _))
+              olMemAllocAlignedHost(_, sizeof(Over), alignof(Over), _))
       .Times(1);
   Over *P3 = aligned_alloc_host<Over>(1, 1, Ctx);
   EXPECT_NE(P3, nullptr);
@@ -305,7 +302,7 @@ TEST(USMFunctions, TemplatedAlignment) {
   free(P3, Ctx);
 
   EXPECT_CALL(Mock.get(),
-              olMemAllocAlignedHost(_, OLDev, sizeof(Over), alignof(Over), _))
+              olMemAllocAlignedHost(_, sizeof(Over), alignof(Over), _))
       .Times(1);
   Over *P4 = malloc_host<Over>(1, Ctx);
   EXPECT_NE(P4, nullptr);
